@@ -1,6 +1,9 @@
 import { adminMailTemplate, mailTemplate } from "../utils/mail.template.js";
 import nodemailer from "nodemailer";
 import path from "path";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 interface RequestBody {
 	body: {
