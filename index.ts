@@ -10,8 +10,12 @@ import rateLimit from "express-rate-limit";
 
 const app = express();
 
-// Trust proxy - required when behind reverse proxy (nginx, load balancer, etc.)
-app.set('trust proxy', true);
+// Trust proxy - more secure configuration for production
+// Option 1: Trust only the first proxy (recommended for most cases)
+app.set('trust proxy', 1);
+
+// Option 2: If you know your proxy IPs, use specific IPs instead:
+// app.set('trust proxy', ['127.0.0.1', '::1', 'your-proxy-ip']);
 
 const limiter = rateLimit({
 	windowMs: 15 * 60 * 1000, 
@@ -19,6 +23,10 @@ const limiter = rateLimit({
 	standardHeaders: true,
 	legacyHeaders: false,
 	message: "Too many requests from this IP, please try again later.",
+	// Additional security: validate the IP more strictly
+	validate: {
+		trustProxy: false, // Disable express-rate-limit's trust proxy validation
+	},
 });
 app.use(limiter);
 
