@@ -1,6 +1,7 @@
 import { adminMailTemplate, mailTemplate } from "../utils/mail.template.js";
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 import path from "path";
+import fs from "fs";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -44,132 +45,102 @@ async function brochureController(req: RequestBody, res: any) {
 
         const adminMail = adminMailTemplate(name, email, phone, products[product_name as keyof typeof products]);
 
-        console.log({
-                user: process.env.EMAIL_USER,
-                pass: process.env.EMAIL_PASS,
-        })
+        // Initialize Resend with API key from environment
+        const resend = new Resend(process.env.RESEND_API_KEY);
 
-        // Alternative configuration for better reliability
-        const transporterConfig = process.env.NODE_ENV === 'production' 
-            ? {
-                // Production: Use specific SMTP settings
-                host: 'smtp.gmail.com',
-                port: 587,
-                secure: false, // true for 465, false for other ports
-                auth: {
-                    user: process.env.EMAIL_USER,
-                    pass: process.env.EMAIL_PASS,
-                },
-                connectionTimeout: 60000,
-                greetingTimeout: 30000,
-                socketTimeout: 60000,
-                pool: true,
-                maxConnections: 5,
-                maxMessages: 10,
-                tls: {
-                    rejectUnauthorized: false
+        // Prepare attachments for Resend
+        const attachments: any[] = [];
+        
+        try {
+            for (const file_type of file_types) {
+                const filePath = path.join(process.cwd(), `data`, `${file_type}`, `${product_name}.pdf`);
+                
+                // Check if file exists before reading
+                if (fs.existsSync(filePath)) {
+                    const fileContent = fs.readFileSync(filePath);
+                    attachments.push({
+                        filename: `${product_name}_${file_type}.pdf`,
+                        content: fileContent,
+                    });
+                } else {
+                    console.warn(`File not found: ${filePath}`);
                 }
             }
-            : {
-                // Development: Use service shortcut
-                service: "gmail",
-                auth: {
-                    user: process.env.EMAIL_USER,
-                    pass: process.env.EMAIL_PASS,
-                },
-                connectionTimeout: 60000,
-                greetingTimeout: 30000,
-                socketTimeout: 60000,
-                pool: true,
-                maxConnections: 5,
-                maxMessages: 10,
-                secure: true,
-                requireTLS: true,
-                tls: {
-                    rejectUnauthorized: false
-                }
-            };
+        } catch (fileError) {
+            console.error("Error reading attachment files:", fileError);
+            return res.status(500).json({ error: "Error preparing email attachments" });
+        }
 
-        const transporter = nodemailer.createTransport(transporterConfig);
-
-        const attachments: any = [];
-        file_types.map((file_type) => {
-            attachments.push({
-                filename: `${product_name}_${file_type}.pdf`,
-                path: path.join(process.cwd(), `data`, `${file_type}`,`${product_name}.pdf`),
-            })
-        })
-
-        const mailOptions = {
-            from: process.env.EMAIL_USER,
-            to: email,
+        // Prepare email options for user
+        const userEmailOptions = {
+            from: 'StreamIndus <noreply@streamindus.com>',
+            to: [email],
             subject: `Resources for ${products[product_name as keyof typeof products]}`,
             html: mail,
             attachments: attachments,
         };
 
-        const adminMailOptions = {
-            from: process.env.EMAIL_USER,
-            to: process.env.ADMIN_EMAIL,
+        // Prepare email options for admin
+        const adminEmailOptions = {
+            from: 'StreamIndus <noreply@streamindus.com>',
+            to: [process.env.ADMIN_EMAIL || 'aksharsaxena2003@gmail.com'],
             subject: `New Resources Request: ${products[product_name as keyof typeof products]}`,
             html: adminMail,
         };
 
-        // Verify transporter configuration before sending emails
-        try {
-            await transporter.verify();
-            console.log('Email server connection verified successfully');
-        } catch (verificationError) {
-            console.error('Email server verification failed:', verificationError);
-            return res.status(500).json({ error: "Email service unavailable. Please try again later." });
-        }
-
-        // Helper function to send email with retry logic
-        const sendEmailWithRetry = (mailOptions: any, retries = 3): Promise<any> => {
-            return new Promise((resolve, reject) => {
-                const attemptSend = (attempt: number) => {
-                    transporter.sendMail(mailOptions, (error: Error | null, info: any) => {
-                        if (error) {
-                            console.error(`Email send attempt ${attempt} failed:`, error);
-                            if (attempt < retries) {
-                                console.log(`Retrying email send... Attempt ${attempt + 1}/${retries}`);
-                                setTimeout(() => attemptSend(attempt + 1), 2000 * attempt); // Exponential backoff
-                            } else {
-                                reject(error);
-                            }
-                        } else {
-                            resolve(info);
-                        }
-                    });
-                };
-                attemptSend(1);
-            });
+        // Helper function to send email with retry logic using Resend
+        const sendEmailWithRetry = async (emailOptions: any, retries = 3): Promise<any> => {
+            let lastError;
+            
+            for (let attempt = 1; attempt <= retries; attempt++) {
+                try {
+                    console.log(`Sending email attempt ${attempt}/${retries}`);
+                    const result = await resend.emails.send(emailOptions);
+                    console.log(`Email sent successfully on attempt ${attempt}:`, result);
+                    return result;
+                } catch (error) {
+                    console.error(`Email send attempt ${attempt} failed:`, error);
+                    lastError = error;
+                    
+                    if (attempt < retries) {
+                        console.log(`Retrying email send... Attempt ${attempt + 1}/${retries}`);
+                        // Wait before retrying (exponential backoff)
+                        await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+                    }
+                }
+            }
+            
+            throw lastError;
         };
 
         try {
             // Send user email with retry
-            const userEmailResult = await sendEmailWithRetry(mailOptions);
-            console.log("User email sent:", userEmailResult.response);
+            const userEmailResult = await sendEmailWithRetry(userEmailOptions);
+            console.log("User email sent successfully:", userEmailResult.id);
 
             // Send admin email (don't block user response if this fails)
-            sendEmailWithRetry(adminMailOptions, 2)
+            sendEmailWithRetry(adminEmailOptions, 2)
                 .then((adminResult) => {
-                    console.log("Admin email sent:", adminResult.response);
+                    console.log("Admin email sent successfully:", adminResult.id);
                 })
                 .catch((adminError) => {
                     console.error("Error sending admin email:", adminError);
                 });
 
-            return res.status(200).json({ message: "Brochure sent successfully" });
+            return res.status(200).json({ 
+                message: "Brochure sent successfully",
+                emailId: userEmailResult.id 
+            });
         } catch (emailError: any) {
             console.error("Final email error after retries:", emailError);
-            // More specific error handling
-            if (emailError.message?.includes('timeout')) {
-                return res.status(500).json({ error: "Email service timeout. Please try again later." });
-            } else if (emailError.message?.includes('authentication')) {
-                return res.status(500).json({ error: "Email authentication failed. Please contact support." });
-            } else if (emailError.code === 'ETIMEDOUT') {
-                return res.status(500).json({ error: "Connection timeout. Please check your internet connection and try again." });
+            
+            // Handle Resend-specific errors
+            if (emailError.message?.includes('rate limit')) {
+                return res.status(500).json({ error: "Rate limit exceeded. Please try again later." });
+            } else if (emailError.message?.includes('invalid')) {
+                return res.status(500).json({ error: "Invalid email configuration. Please contact support." });
+            } else if (emailError.message?.includes('unauthorized')) {
+                return res.status(500).json({ error: "Email service authentication failed. Please contact support." });
             } else {
                 return res.status(500).json({ error: "Error sending email. Please try again later." });
             }
