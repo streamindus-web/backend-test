@@ -44,6 +44,11 @@ function brochureController(req: RequestBody, res: any) {
 
         const adminMail = adminMailTemplate(name, email, phone, products[product_name as keyof typeof products]);
 
+        console.log({
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS,
+        })
+        
         const transporter = nodemailer.createTransport({
             host: "smtp.gmail.com",
             port: 587,
